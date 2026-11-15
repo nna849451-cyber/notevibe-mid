@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NoteVibe - オンラインMIDI共有・再生プラットフォーム</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- Tone.js & @tonejs/midi for real browser MIDI playback & creation -->
+  <script src="https://unpkg.com/tone@14.7.77/build/Tone.js"></script>
+  <script src="https://unpkg.com/@tonejs/midi@2.0.28/build/Midi.js"></script>
+  <!-- Gun.js for serverless P2P/Relay online sharing on GitHub Pages without a custom backend -->
+  <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
+</head>
+<body>
+  <!-- ネットワーク切断時のオーバーレイ（オンライン必須仕様） -->
+  <div id="offline-overlay" class="offline-overlay hidden">
+    <div class="offline-box">
+      <h2>⚠️ オフラインです</h2>
+      <p>このアプリはオンライン専用です。インターネットに接続しないと利用・公開・再生できません。</p>
+      <button onclick="location.reload()" class="btn primary">再接続を確認</button>
+    </div>
+  </div>
+
+  <div class="app-layout">
+    <!-- サイドバー -->
+    <aside class="sidebar">
+      <div class="sidebar-top">
+        <!-- 左上の3点リーダーメニュー -->
+        <div class="menu-wrapper">
+          <button id="top-menu-btn" class="dots-btn" title="メニュー">⋮</button>
+          <div id="top-dropdown" class="dropdown-menu hidden">
+            <button id="menu-terms" class="dropdown-item">利用規約</button>
+            <button id="menu-privacy" class="dropdown-item">プライバシーポリシー</button>
+            <hr class="dropdown-divider" />
+            <button id="menu-signout" class="dropdown-item danger hidden">サインアウト</button>
+          </div>
+        </div>
+        <div class="brand">
+          <span class="brand-icon">🎹</span>
+          <span class="brand-name">NoteVibe</span>
+        </div>
+      </div>
+
+      <!-- ユーザーアカウントエリア -->
+      <div class="account-card">
+        <div id="logged-out-view">
+          <p class="account-hint">公開やいいね、セーブをするにはアカウントが必要です</p>
+          <button id="open-auth-btn" class="btn primary full">ログイン・アカウント作成</button>
+        </div>
+        <div id="logged-in-view" class="hidden">
+          <div class="user-profile-row">
+            <img id="user-avatar-img" src="" alt="アイコン" class="avatar-img" />
+            <div class="user-info">
+              <div id="user-display-name" class="user-name">ユーザー</div>
+              <div class="user-status"><span class="online-dot"></span> オンライン接続中</div>
+            </div>
+          </div>
+          <label class="btn secondary small full mt-8">
+            アイコン画像を変更
+            <input type="file" id="change-avatar-input" accept="image/*" hidden />
+          </label>
+        </div>
+      </div>
+
+      <!-- ナビゲーション & アクション -->
+      <nav class="nav-section">
+        <button class="nav-item active" data-tab="explore">🌐 みんなの公開トラック</button>
+        <button class="nav-item" data-tab="saved">💾 セーブしたお気に入り</button>
+      </nav>
+
+      <div class="action-section">
+        <label class="btn accent full file-label">
+          📂 .midi、.midファイル選択
+          <input type="file" id="midi-file-input" accept=".mid,.midi,audio/midi,audio/x-midi" hidden />
+        </label>
+        <button id="open-maker-btn" class="btn secondary full mt-8">🎼 .midファイルを作る</button>
+      </div>
+
+      <div class="network-badge">
+        <span id="peer-status">🔄 オンラインネットワーク同期中...</span>
+      </div>
+    </aside>
+
+    <!-- メインコンテンツ -->
+    <main class="main-content">
+      <header class="main-header">
+        <div>
+          <h1 id="page-title">みんなの公開MIDIトラック</h1>
+          <p id="page-subtitle">世界中のユーザーがオンラインで公開したMIDIを聴いて反応しよう</p>
+        </div>
+        <div class="search-box">
+          <input type="text" id="search-input" placeholder="トラック、アルバム、ジャンル、作成者で検索..." />
+        </div>
+      </header>
+
+      <!-- トラック一覧グリッド -->
+      <div id="tracks-grid" class="tracks-grid"></div>
+      <div id="empty-state" class="empty-state hidden">
+        <p>まだトラックがありません。「.midi、.midファイル選択」または「.midファイルを作る」から最初の1曲をみんなに公開しよう！</p>
+      </div>
+    </main>
+  </div>
+
+  <!-- 下部固定プレイヤーバー（ストリーミング風UI） -->
+  <footer class="player-bar">
+    <div class="player-left">
+      <img id="player-cover" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Crect width='64' height='64' fill='%23282828'/%3E%3Ctext x='50%25' y='55%25' font-size='28' text-anchor='middle' fill='%23888'%3E🎵%3C/text%3E%3C/svg%3E" alt="cover" class="player-cover" />
+      <div class="player-meta">
+        <div id="player-title" class="player-title">トラックを選択してください</div>
+        <div id="player-artist" class="player-artist">作成者未選択</div>
+        <div id="player-submeta" class="player-submeta"></div>
+      </div>
+    </div>
+
+    <div class="player-center">
+      <div class="player-controls">
+        <button id="player-play-btn" class="play-circle-btn" title="再生">▶ 再生</button>
+        <button id="player-stop-btn" class="control-btn" title="停止">⏹</button>
+      </div>
+      <div class="progress-row">
+        <span id="current-time">0:00</span>
+        <input type="range" id="seek-bar" min="0" max="100" value="0" step="0.1" />
+        <span id="total-time">0:00</span>
+      </div>
+    </div>
+
+    <div class="player-right">
+      <button id="player-like-btn" class="action-pill">🤍 いいね <span id="player-like-count">0</span></button>
+      <button id="player-save-btn" class="action-pill">🔖 セーブ</button>
+      <button id="player-edit-btn" class="action-pill hidden">⚙️ 設定書き込み</button>
+      <button id="player-report-btn" class="action-pill danger-outline">🚨 通報</button>
+    </div>
+  </footer>
+
+  <!-- モーダル: ログイン・アカウント作成 -->
+  <div id="auth-modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2>ログイン・アカウント作成</h2>
+        <button class="close-modal" data-close="auth-modal">✕</button>
+      </div>
+      <p class="modal-note">※一度ログイン・作成すると、左上の3点リーダー（⋮）からサインアウトするまで永続的にログイン状態が保持されます。</p>
+      <form id="auth-form">
+        <label>ユーザーID（半角英数字）</label>
+        <input type="text" id="auth-userid" required placeholder="例: midi_master_2026" />
+        <label>表示名（作成者名）</label>
+        <input type="text" id="auth-username" required placeholder="例: 音楽クリエイター" />
+        <label>パスワード</label>
+        <input type="password" id="auth-password" required placeholder="パスワードを入力" />
+        <label>アイコン画像（任意）</label>
+        <input type="file" id="auth-avatar" accept="image/*" />
+        <button type="submit" class="btn primary full mt-12">ログイン / 新規登録して開始</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- モーダル: 設定書き込み & オンライン公開（作成者専用） -->
+  <div id="settings-modal" class="modal hidden">
+    <div class="modal-card large">
+      <div class="modal-header">
+        <h2>⚙️ 設定書き込み＆みんなに公開</h2>
+        <button class="close-modal" data-close="settings-modal">✕</button>
+      </div>
+      <p class="modal-note">※設定書き込みは作成者本人のみ可能です。保存するとオンライン上の全ユーザーに即時公開されます。</p>
+      <form id="settings-form">
+        <input type="hidden" id="edit-track-id" />
+        <div class="form-grid">
+          <div>
+            <label>トラック名 *</label>
+            <input type="text" id="meta-track" required placeholder="曲のタイトル" />
+          </div>
+          <div>
+            <label>アルバム名 *</label>
+            <input type="text" id="meta-album" required placeholder="アルバム名（シングル可）" />
+          </div>
+          <div>
+            <label>年（リリース年） *</label>
+            <input type="number" id="meta-year" required value="2026" min="1900" max="2099" />
+          </div>
+          <div>
+            <label>ジャンル *</label>
+            <input type="text" id="meta-genre" required placeholder="例: クラシック, ゲーム音楽, EDM, ジャズ" />
+          </div>
+          <div>
+            <label>作成者 *</label>
+            <input type="text" id="meta-creator" required placeholder="作成者名" />
+          </div>
+          <div>
+            <label>カバー画像</label>
+            <input type="file" id="meta-image-file" accept="image/*" />
+          </div>
+        </div>
+        <div class="cover-preview-wrap">
+          <img id="meta-image-preview" src="" alt="プレビュー" class="cover-preview hidden" />
+        </div>
+        <label>説明</label>
+        <textarea id="meta-description" rows="3" placeholder="曲の解説や使用音源、制作秘話など"></textarea>
+        <div class="modal-actions">
+          <button type="button" class="btn secondary" data-close="settings-modal">キャンセル</button>
+          <button type="submit" class="btn primary">🌐 設定を書き込んでみんなに公開する</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- モーダル: .midファイルを作る（簡易ステップシーケンサー＆MIDIジェネレーター） -->
+  <div id="maker-modal" class="modal hidden">
+    <div class="modal-card large">
+      <div class="modal-header">
+        <h2>🎼 .midファイルを作る（オンラインMIDIシーケンサー）</h2>
+        <button class="close-modal" data-close="maker-modal">✕</button>
+      </div>
+      <p class="modal-note">マス目をクリックしてメロディを作り、.midファイルとしてダウンロードまたはそのままみんなに公開できます。</p>
+      <div class="maker-controls">
+        <label>テンポ (BPM): <input type="number" id="maker-bpm" value="120" min="60" max="240" style="width:70px;" /></label>
+        <button type="button" id="maker-preview-btn" class="btn secondary small">▶ 試聴</button>
+        <button type="button" id="maker-clear-btn" class="btn secondary small">クリア</button>
+      </div>
+      <div id="sequencer-grid" class="sequencer-grid"></div>
+      <div class="modal-actions">
+        <button type="button" id="maker-download-btn" class="btn secondary">⬇ .midをダウンロード</button>
+        <button type="button" id="maker-publish-btn" class="btn primary">設定書き込み＆公開へ進む</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- モーダル: トラック詳細・反応（コメント・いいね・通報・セーブ） -->
+  <div id="detail-modal" class="modal hidden">
+    <div class="modal-card large">
+      <div class="modal-header">
+        <h2 id="detail-title">トラック詳細</h2>
+        <button class="close-modal" data-close="detail-modal">✕</button>
+      </div>
+      <div class="detail-top">
+        <img id="detail-cover" src="" alt="cover" class="detail-cover" />
+        <div class="detail-info">
+          <div class="badge-row">
+            <span id="detail-genre" class="badge">ジャンル</span>
+            <span id="detail-year" class="badge">2026</span>
+            <span id="detail-album" class="badge">アルバム</span>
+          </div>
+          <p class="detail-creator">作成者: <strong id="detail-creator"></strong></p>
+          <p id="detail-desc" class="detail-desc"></p>
+          <div class="detail-buttons">
+            <button id="detail-play-btn" class="btn primary">▶ 再生</button>
+            <button id="detail-like-btn" class="btn secondary">🤍 いいね (<span id="detail-likes">0</span>)</button>
+            <button id="detail-save-btn" class="btn secondary">🔖 セーブ</button>
+            <button id="detail-edit-btn" class="btn secondary hidden">⚙️ 設定書き込み</button>
+            <button id="detail-report-btn" class="btn danger-outline">🚨 通報</button>
+          </div>
+        </div>
+      </div>
+      <hr class="divider" />
+      <div class="reactions-section">
+        <h3>💬 みんなの反応（オンラインコメント）</h3>
+        <form id="comment-form" class="comment-form">
+          <input type="text" id="comment-input" placeholder="曲の感想や反応を書き込もう..." required />
+          <button type="submit" class="btn primary">送信</button>
+        </form>
+        <div id="comments-list" class="comments-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- モーダル: 利用規約 / プライバシーポリシー -->
+  <div id="legal-modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2 id="legal-title">利用規約</h2>
+        <button class="close-modal" data-close="legal-modal">✕</button>
+      </div>
+      <div id="legal-body" class="legal-body"></div>
+    </div>
+  </div>
+
+  <!-- トースト通知 -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
